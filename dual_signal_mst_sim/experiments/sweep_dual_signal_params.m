@@ -73,6 +73,17 @@ n_lambda = numel(lambda_base_values);
 n_alpha = numel(alpha_min_values);
 total_combos = n_lambda * n_alpha;     % 110
 
+%% 启动并行池（指定 worker 数量以充分利用多核）
+desired_workers = 160;  % 192 核机器，留 32 核给系统和 MATLAB 主进程
+pool = gcp('nocreate');
+if isempty(pool)
+    pool = parpool('Processes', desired_workers);
+elseif pool.NumWorkers < desired_workers
+    delete(pool);
+    pool = parpool('Processes', desired_workers);
+end
+fprintf('并行池已启用：%d workers\n\n', pool.NumWorkers);
+
 %% 输出目录
 results_dir = fullfile(fileparts(mfilename('fullpath')), '..', 'results');
 if ~exist(results_dir, 'dir'), mkdir(results_dir); end
