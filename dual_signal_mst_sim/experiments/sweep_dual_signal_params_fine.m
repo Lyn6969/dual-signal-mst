@@ -66,12 +66,21 @@ total_combos = n_lambda * n_alpha;
 
 %% 启动并行池
 desired_workers = 250;
+cluster = parcluster('Processes');
+if cluster.NumWorkers < desired_workers
+    fprintf('更新 Processes profile: NumWorkers %d -> %d\n', ...
+        cluster.NumWorkers, desired_workers);
+    cluster.NumWorkers = desired_workers;
+    saveProfile(cluster);
+    cluster = parcluster('Processes');
+end
+
 pool = gcp('nocreate');
 if isempty(pool)
-    pool = parpool('Processes', desired_workers);
+    pool = parpool(cluster, desired_workers);
 elseif pool.NumWorkers < desired_workers
     delete(pool);
-    pool = parpool('Processes', desired_workers);
+    pool = parpool(cluster, desired_workers);
 end
 fprintf('并行池：%d workers\n\n', pool.NumWorkers);
 
