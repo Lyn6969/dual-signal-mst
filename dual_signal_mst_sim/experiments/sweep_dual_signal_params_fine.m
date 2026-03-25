@@ -65,7 +65,7 @@ n_alpha = numel(alpha_min_values);
 total_combos = n_lambda * n_alpha;
 
 %% 启动并行池
-desired_workers = 180;  % 192 核机器，留 12 核给系统
+desired_workers = 250;
 pool = gcp('nocreate');
 if isempty(pool)
     pool = parpool('Processes', desired_workers);
