@@ -189,7 +189,9 @@ parfor jid = 1:total_jobs
     pp.dualSignalChigh = C_high;
     job_P(jid) = run_persistence(pp, pers_cfg, seed + 50000);
 
-    send(progress_queue, jid);
+    if mod(jid, 50) == 0 || jid == total_jobs
+        send(progress_queue, jid);
+    end
 end
 
 sweep_elapsed = toc(sweep_timer);
