@@ -65,8 +65,10 @@ n_alpha = numel(alpha_min_values);
 total_combos = n_lambda * n_alpha;
 
 %% 启动并行池
-desired_workers = 250;
+max_workers = 300;
 cluster = parcluster('Processes');
+desired_workers = detectDesiredWorkers(max_workers, cluster);
+fprintf('自动检测到并行 worker 数: %d\n', desired_workers);
 if cluster.NumWorkers < desired_workers
     fprintf('更新 Processes profile: NumWorkers %d -> %d\n', ...
         cluster.NumWorkers, desired_workers);
@@ -76,10 +78,11 @@ if cluster.NumWorkers < desired_workers
 end
 
 pool = gcp('nocreate');
-if isempty(pool)
-    pool = parpool(cluster, desired_workers);
-elseif pool.NumWorkers < desired_workers
+if ~isempty(pool) && pool.NumWorkers ~= desired_workers
     delete(pool);
+    pool = [];
+end
+if isempty(pool)
     pool = parpool(cluster, desired_workers);
 end
 fprintf('并行池：%d workers\n\n', pool.NumWorkers);
@@ -357,6 +360,51 @@ function progressTracker(mode, val)
                 100*p_count/p_total, p_count, p_total, elapsed/60, remaining/60);
             p_last = tic;
         end
+    end
+end
+
+function desired_workers = detectDesiredWorkers(max_workers, cluster)
+% 根据调度器配额、本机核数和 profile 上限自动选择 worker 数
+    desired_workers = NaN;
+
+    env_names = {'SLURM_CPUS_PER_TASK', 'SLURM_CPUS_ON_NODE', 'PBS_NP', 'NSLOTS'};
+    for i = 1:numel(env_names)
+        env_value = parsePositiveInteger(getenv(env_names{i}));
+        if ~isnan(env_value)
+            desired_workers = env_value;
+            fprintf('检测到调度器环境变量 %s=%d\n', env_names{i}, env_value);
+            break;
+        end
+    end
+
+    if isnan(desired_workers)
+        try
+            desired_workers = feature('numcores');
+            fprintf('检测到本机物理核数: %d\n', desired_workers);
+        catch
+            desired_workers = cluster.NumWorkers;
+            fprintf('无法读取本机核数，回退到 profile 上限: %d\n', desired_workers);
+        end
+    end
+
+    desired_workers = max(1, min([floor(desired_workers), max_workers, 512]));
+end
+
+function value = parsePositiveInteger(raw_value)
+% 从环境变量中提取正整数
+    value = NaN;
+    if isempty(raw_value)
+        return;
+    end
+
+    token = regexp(raw_value, '\d+', 'match', 'once');
+    if isempty(token)
+        return;
+    end
+
+    value = str2double(token);
+    if isnan(value) || value <= 0
+        value = NaN;
     end
 end
 
