@@ -36,7 +36,7 @@ eta = 0.25;
 resp_params.angleNoiseIntensity = eta^2 / 2;
 pers_params.angleNoiseIntensity = eta^2 / 2;
 
-num_runs = 50;
+num_runs = 20;
 num_angles = 1;
 base_seed = 20260325;
 
@@ -58,8 +58,8 @@ C_low = 30;
 C_high = 150;
 
 % 精细扫描网格
-lambda_base_values = 0.10:0.01:1.00;
-alpha_min_values = 0.00:0.01:1.00;
+lambda_base_values = 0.50:0.01:0.80;
+alpha_min_values = 0.40:0.01:0.90;
 n_lambda = numel(lambda_base_values);
 n_alpha = numel(alpha_min_values);
 total_combos = n_lambda * n_alpha;
