@@ -65,7 +65,7 @@ n_alpha = numel(alpha_min_values);
 total_combos = n_lambda * n_alpha;
 
 %% 启动并行池
-desired_workers = 250;
+desired_workers = 180;  % 192 核机器，留 12 核给系统
 pool = gcp('nocreate');
 if isempty(pool)
     pool = parpool('Processes', desired_workers);
@@ -137,10 +137,10 @@ job_P = NaN(total_jobs, 1);
 fprintf('[Dual 精细扫描] %d 个 jobs (parfor %d workers)...\n', total_jobs, pool.NumWorkers);
 sweep_timer = tic;
 
-% 进度追踪（用 DataQueue + 局部函数 + persistent 变量）
+% 进度追踪
 progress_queue = parallel.pool.DataQueue;
-initProgress(total_jobs);  % 初始化计数器
-afterEach(progress_queue, @(~) tickProgress());
+progressTracker('init', total_jobs);
+afterEach(progress_queue, @(~) progressTracker('tick', 0));
 
 parfor jid = 1:total_jobs
     li = job_li(jid);
@@ -331,25 +331,23 @@ save(fullfile(out_dir, 'sweep_data.mat'), ...
 fprintf('\n完成。输出目录: %s\n', out_dir);
 
 %% ========================================================================
-function initProgress(total)
-% 初始化进度计数器
+function progressTracker(mode, val)
+% 统一的进度追踪器，用 persistent 变量保持状态
     persistent p_count p_total p_start p_last
-    p_count = 0;
-    p_total = total;
-    p_start = tic;
-    p_last = tic;
-end
-
-function tickProgress()
-% 每次 parfor 完成一个 job 时调用
-    persistent p_count p_total p_start p_last
-    p_count = p_count + 1;
-    if toc(p_last) >= 15 || p_count == p_total
-        elapsed = toc(p_start);
-        remaining = elapsed / p_count * (p_total - p_count);
-        fprintf('  [%5.1f%%] %d/%d | 已用 %.1f min | 剩余 %.1f min\n', ...
-            100*p_count/p_total, p_count, p_total, elapsed/60, remaining/60);
+    if strcmp(mode, 'init')
+        p_count = 0;
+        p_total = val;
+        p_start = tic;
         p_last = tic;
+    else
+        p_count = p_count + 1;
+        if toc(p_last) >= 15 || p_count == p_total
+            elapsed = toc(p_start);
+            remaining = elapsed / p_count * (p_total - p_count);
+            fprintf('  [%5.1f%%] %d/%d | 已用 %.1f min | 剩余 %.1f min\n', ...
+                100*p_count/p_total, p_count, p_total, elapsed/60, remaining/60);
+            p_last = tic;
+        end
     end
 end
 
