@@ -33,7 +33,7 @@ resp_params.forced_turn_duration = 400;
 pers_params = base;
 pers_params.T_max = 600;
 
-eta = 0.25;
+eta = 0.30;
 resp_params.angleNoiseIntensity = eta^2 / 2;
 pers_params.angleNoiseIntensity = eta^2 / 2;
 
