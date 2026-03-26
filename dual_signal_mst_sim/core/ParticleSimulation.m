@@ -43,7 +43,7 @@ classdef ParticleSimulation < handle
         local_saliency_state; % [N x 1] 记录邻域运动显著性统计
 
         % 双信号门控连续自适应参数
-        adaptiveThresholdMode = 'binary';   % 'binary' | 'dual_signal_gate'
+        adaptiveThresholdMode = 'binary';   % 'binary' | 'dual_signal_gate' | 'sigmoid_gate' | 'algebraic_fusion'
         dualSignalGamma = 1.0;              % γ: 方差映射指数
         dualSignalVarianceRef = [];         % V_ref: 方差归一化参考尺度（由 calibrate_vref 标定）
         dualSignalSmoothingLambda = 0.3;    % λ_base: 下降分支基础平滑速度
@@ -51,6 +51,10 @@ classdef ParticleSimulation < handle
         dualSignalLambdaUp = 0.5;           % λ_up: 上升分支快速恢复速度
         dualSignalClow = 30;                % C_low: C_ratio 归一化 log 空间下界
         dualSignalChigh = 150;              % C_high: C_ratio 归一化 log 空间上界
+
+        % v5.4 sigmoid 门控参数
+        dualSignalDmid = 0.6;               % D_mid: sigmoid 门控中心点
+        dualSignalKappa = 10;               % κ: sigmoid 陡峭度
 
         % 拓扑邻居选择参数
         use_topology = false; % 是否使用拓扑邻居选择（false: 基于半径, true: 基于拓扑）
@@ -717,6 +721,37 @@ classdef ParticleSimulation < handle
                                     (obj.dualSignalAlphaMin + (1 - obj.dualSignalAlphaMin) * C_norm);
                             else
                                 % 上升分支：快速恢复，不受 C_ratio 限制
+                                lam_eff = obj.dualSignalLambdaUp;
+                            end
+                            lam_eff = min(max(lam_eff, 0), 1);
+                            obj.cj_threshold_dynamic(i) = ...
+                                (1 - lam_eff) * obj.cj_threshold_dynamic(i) + lam_eff * target_cj;
+                            obj.local_order_state(i) = C_norm;
+
+                        case 'sigmoid_gate'
+                            [D, C_norm] = obj.computeDualSignalMetrics(saliency_var, s_values);
+                            target_cj = cfg.cj_high - (cfg.cj_high - cfg.cj_low) * (D ^ obj.dualSignalGamma);
+                            if target_cj < obj.cj_threshold_dynamic(i)
+                                w = 1 / (1 + exp(-obj.dualSignalKappa * (D - obj.dualSignalDmid)));
+                                confidence = w + (1 - w) * C_norm;
+                                lam_floor = obj.dualSignalSmoothingLambda * obj.dualSignalAlphaMin;
+                                lam_eff = lam_floor + (1 - lam_floor) * confidence;
+                            else
+                                lam_eff = obj.dualSignalLambdaUp;
+                            end
+                            lam_eff = min(max(lam_eff, 0), 1);
+                            obj.cj_threshold_dynamic(i) = ...
+                                (1 - lam_eff) * obj.cj_threshold_dynamic(i) + lam_eff * target_cj;
+                            obj.local_order_state(i) = C_norm;
+
+                        case 'algebraic_fusion'
+                            [D, C_norm] = obj.computeDualSignalMetrics(saliency_var, s_values);
+                            target_cj = cfg.cj_high - (cfg.cj_high - cfg.cj_low) * (D ^ obj.dualSignalGamma);
+                            if target_cj < obj.cj_threshold_dynamic(i)
+                                lam_floor = obj.dualSignalSmoothingLambda * obj.dualSignalAlphaMin;
+                                lam_raw = D * (D + (1 - D) * C_norm);
+                                lam_eff = max(lam_floor, lam_raw);
+                            else
                                 lam_eff = obj.dualSignalLambdaUp;
                             end
                             lam_eff = min(max(lam_eff, 0), 1);
