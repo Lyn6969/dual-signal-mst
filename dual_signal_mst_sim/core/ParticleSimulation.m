@@ -62,6 +62,7 @@ classdef ParticleSimulation < handle
         twoStageWindowK = 2;                % K: 确认窗口长度 (步数)
         twoStageAlpha = 0.6;                % α: 证据函数中 D 的权重
         twoStageConfThreshold = 1.0;        % Θ_conf: 累积证据确认阈值
+        twoStageMidThreshold = 3.0;         % M_mid: 候选状态中间阈值
 
         % 二阶段判决内部状态 (0=H, 1=P, 2=L)
         twoStageState;                      % [N x 1] 粒子判决状态
@@ -794,7 +795,7 @@ classdef ParticleSimulation < handle
                             elseif si == 1  % P: 候选状态，累积证据
                                 obj.twoStageTimer(i) = obj.twoStageTimer(i) + 1;
                                 obj.twoStageEvidence(i) = obj.twoStageEvidence(i) + E_t;
-                                obj.cj_threshold_dynamic(i) = cfg.cj_low;  % 窗口内保持低阈值
+                                obj.cj_threshold_dynamic(i) = obj.twoStageMidThreshold;  % 窗口内用中间阈值
 
                                 if obj.twoStageTimer(i) >= obj.twoStageWindowK
                                     % 窗口结束，判决
