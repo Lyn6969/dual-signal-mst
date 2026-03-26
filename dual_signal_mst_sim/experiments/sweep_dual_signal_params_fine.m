@@ -152,7 +152,7 @@ sweep_timer = tic;
 % 进度追踪
 progress_queue = parallel.pool.DataQueue;
 progressTracker('init', total_jobs);
-afterEach(progress_queue, @(~) progressTracker('tick', 0));
+afterEach(progress_queue, @(inc) progressTracker('tick', inc));
 
 parfor jid = 1:total_jobs
     li = job_li(jid);
@@ -189,8 +189,10 @@ parfor jid = 1:total_jobs
     pp.dualSignalChigh = C_high;
     job_P(jid) = run_persistence(pp, pers_cfg, seed + 50000);
 
-    if mod(jid, 50) == 0 || jid == total_jobs
-        send(progress_queue, jid);
+    if mod(jid, 50) == 0
+        send(progress_queue, 50);
+    elseif jid == total_jobs
+        send(progress_queue, mod(total_jobs, 50));
     end
 end
 
@@ -354,8 +356,8 @@ function progressTracker(mode, val)
         p_start = tic;
         p_last = tic;
     else
-        p_count = p_count + 1;
-        if toc(p_last) >= 15 || p_count == p_total
+        p_count = p_count + val;
+        if toc(p_last) >= 15 || p_count >= p_total
             elapsed = toc(p_start);
             remaining = elapsed / p_count * (p_total - p_count);
             fprintf('  [%5.1f%%] %d/%d | 已用 %.1f min | 剩余 %.1f min\n', ...
