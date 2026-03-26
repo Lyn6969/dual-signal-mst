@@ -37,7 +37,7 @@ eta = 0.25;
 resp_params.angleNoiseIntensity = eta^2 / 2;
 pers_params.angleNoiseIntensity = eta^2 / 2;
 
-num_runs = 10;
+num_runs = 50;
 num_angles = 1;
 base_seed = 20260326;
 
