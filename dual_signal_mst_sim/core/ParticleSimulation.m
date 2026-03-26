@@ -43,7 +43,7 @@ classdef ParticleSimulation < handle
         local_saliency_state; % [N x 1] 记录邻域运动显著性统计
 
         % 双信号门控连续自适应参数
-        adaptiveThresholdMode = 'binary';   % 'binary' | 'dual_signal_gate' | 'sigmoid_gate' | 'algebraic_fusion'
+        adaptiveThresholdMode = 'binary';   % 'binary' | 'dual_signal_gate' | 'sigmoid_gate' | 'algebraic_fusion' | 'two_stage'
         dualSignalGamma = 1.0;              % γ: 方差映射指数
         dualSignalVarianceRef = [];         % V_ref: 方差归一化参考尺度（由 calibrate_vref 标定）
         dualSignalSmoothingLambda = 0.3;    % λ_base: 下降分支基础平滑速度
@@ -55,6 +55,18 @@ classdef ParticleSimulation < handle
         % v5.4 sigmoid 门控参数
         dualSignalDmid = 0.6;               % D_mid: sigmoid 门控中心点
         dualSignalKappa = 10;               % κ: sigmoid 陡峭度
+
+        % 二阶段判决参数
+        twoStageThresholdOn = 0.6;          % θ_on: 候选触发阈值 (D 空间)
+        twoStageThresholdOff = 0.3;         % θ_off: 恢复阈值 (D 空间)
+        twoStageWindowK = 2;                % K: 确认窗口长度 (步数)
+        twoStageAlpha = 0.6;                % α: 证据函数中 D 的权重
+        twoStageConfThreshold = 1.0;        % Θ_conf: 累积证据确认阈值
+
+        % 二阶段判决内部状态 (0=H, 1=P, 2=L)
+        twoStageState;                      % [N x 1] 粒子判决状态
+        twoStageTimer;                      % [N x 1] 确认窗口计数器
+        twoStageEvidence;                   % [N x 1] 累积证据
 
         % 拓扑邻居选择参数
         use_topology = false; % 是否使用拓扑邻居选择（false: 基于半径, true: 基于拓扑）
@@ -622,6 +634,10 @@ classdef ParticleSimulation < handle
             obj.cj_threshold_dynamic = ones(obj.N, 1) * obj.cj_threshold;
             obj.local_order_state = zeros(obj.N, 1);
             obj.local_saliency_state = zeros(obj.N, 1);
+            % 二阶段判决状态初始化
+            obj.twoStageState = zeros(obj.N, 1);     % 全部从 H(0) 开始
+            obj.twoStageTimer = zeros(obj.N, 1);
+            obj.twoStageEvidence = zeros(obj.N, 1);
         end
 
         function updateAdaptiveThresholds(obj, neighbor_matrix)
@@ -635,7 +651,7 @@ classdef ParticleSimulation < handle
             use_saliency_metric = ~isempty(cfg.saliency_threshold);
 
             % 双信号模式强制启用显著性统计
-            if strcmp(obj.adaptiveThresholdMode, 'dual_signal_gate')
+            if ismember(obj.adaptiveThresholdMode, {'dual_signal_gate', 'sigmoid_gate', 'algebraic_fusion', 'two_stage'})
                 use_saliency_metric = true;
             end
 
@@ -757,6 +773,55 @@ classdef ParticleSimulation < handle
                             lam_eff = min(max(lam_eff, 0), 1);
                             obj.cj_threshold_dynamic(i) = ...
                                 (1 - lam_eff) * obj.cj_threshold_dynamic(i) + lam_eff * target_cj;
+                            obj.local_order_state(i) = C_norm;
+
+                        case 'two_stage'
+                            [D, C_norm] = obj.computeDualSignalMetrics(saliency_var, s_values);
+                            E_t = D * (obj.twoStageAlpha + (1 - obj.twoStageAlpha) * C_norm);
+                            si = obj.twoStageState(i);
+
+                            if si == 0  % H: 高阈值稳态
+                                if D >= obj.twoStageThresholdOn
+                                    % 候选触发：立刻降到低阈值
+                                    obj.twoStageState(i) = 1;  % → P
+                                    obj.twoStageTimer(i) = 1;
+                                    obj.twoStageEvidence(i) = E_t;
+                                    obj.cj_threshold_dynamic(i) = cfg.cj_low;
+                                else
+                                    obj.cj_threshold_dynamic(i) = cfg.cj_high;
+                                end
+
+                            elseif si == 1  % P: 候选状态，累积证据
+                                obj.twoStageTimer(i) = obj.twoStageTimer(i) + 1;
+                                obj.twoStageEvidence(i) = obj.twoStageEvidence(i) + E_t;
+                                obj.cj_threshold_dynamic(i) = cfg.cj_low;  % 窗口内保持低阈值
+
+                                if obj.twoStageTimer(i) >= obj.twoStageWindowK
+                                    % 窗口结束，判决
+                                    if obj.twoStageEvidence(i) >= obj.twoStageConfThreshold
+                                        % 确认成功 → L
+                                        obj.twoStageState(i) = 2;
+                                        obj.cj_threshold_dynamic(i) = cfg.cj_low;
+                                    else
+                                        % 确认失败 → 撤回到 H
+                                        obj.twoStageState(i) = 0;
+                                        obj.twoStageTimer(i) = 0;
+                                        obj.twoStageEvidence(i) = 0;
+                                        obj.cj_threshold_dynamic(i) = cfg.cj_high;
+                                    end
+                                end
+
+                            else  % L: 已确认低阈值
+                                if D < obj.twoStageThresholdOff
+                                    % 信号消退，恢复高阈值
+                                    obj.twoStageState(i) = 0;
+                                    obj.twoStageTimer(i) = 0;
+                                    obj.twoStageEvidence(i) = 0;
+                                    obj.cj_threshold_dynamic(i) = cfg.cj_high;
+                                else
+                                    obj.cj_threshold_dynamic(i) = cfg.cj_low;
+                                end
+                            end
                             obj.local_order_state(i) = C_norm;
 
                         otherwise
