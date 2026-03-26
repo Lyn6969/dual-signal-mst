@@ -107,7 +107,7 @@ R_binary = NaN(num_runs, 1);
 P_binary = NaN(num_runs, 1);
 
 parfor ri = 1:num_runs
-    seed = base_seed + 100000 + ri;
+    seed = base_seed + ri;
     rp = resp_params;
     rp.useAdaptiveThreshold = true;
     rp.adaptiveThresholdConfig = adaptive_cfg;
@@ -161,7 +161,7 @@ parfor jid = 1:total_jobs
 
     lb = lambda_base_values(li);
     am = alpha_min_values(ai);
-    seed = base_seed + li*10000 + ai*1000 + ri;
+    seed = base_seed + ri;
 
     rp = resp_params;
     rp.useAdaptiveThreshold = true;
