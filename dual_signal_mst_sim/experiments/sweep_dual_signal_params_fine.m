@@ -383,8 +383,8 @@ function desired_workers = detectDesiredWorkers(cluster)
     if isnan(desired_workers)
         try
             logical_cores = maxNumCompThreads;
-            desired_workers = floor(logical_cores * 0.8);
-            fprintf('检测到逻辑核心数: %d，使用 80%% = %d\n', logical_cores, desired_workers);
+            desired_workers = floor(logical_cores * 2 * 0.8);
+            fprintf('检测到核心数: %d，×2×80%% = %d\n', logical_cores, desired_workers);
         catch
             try
                 desired_workers = floor(feature('numcores') * 2 * 0.8);
