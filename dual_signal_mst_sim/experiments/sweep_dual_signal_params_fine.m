@@ -65,9 +65,8 @@ n_alpha = numel(alpha_min_values);
 total_combos = n_lambda * n_alpha;
 
 %% 启动并行池
-max_workers = 300;
 cluster = parcluster('Processes');
-desired_workers = detectDesiredWorkers(max_workers, cluster);
+desired_workers = detectDesiredWorkers(cluster);
 fprintf('自动检测到并行 worker 数: %d\n', desired_workers);
 if cluster.NumWorkers < desired_workers
     fprintf('更新 Processes profile: NumWorkers %d -> %d\n', ...
@@ -367,7 +366,7 @@ function progressTracker(mode, val)
     end
 end
 
-function desired_workers = detectDesiredWorkers(max_workers, cluster)
+function desired_workers = detectDesiredWorkers(cluster)
 % 根据调度器配额、本机核数和 profile 上限自动选择 worker 数
     desired_workers = NaN;
 
@@ -383,15 +382,21 @@ function desired_workers = detectDesiredWorkers(max_workers, cluster)
 
     if isnan(desired_workers)
         try
-            desired_workers = feature('numcores');
-            fprintf('检测到本机物理核数: %d\n', desired_workers);
+            logical_cores = maxNumCompThreads;
+            desired_workers = floor(logical_cores * 0.8);
+            fprintf('检测到逻辑核心数: %d，使用 80%% = %d\n', logical_cores, desired_workers);
         catch
-            desired_workers = cluster.NumWorkers;
-            fprintf('无法读取本机核数，回退到 profile 上限: %d\n', desired_workers);
+            try
+                desired_workers = floor(feature('numcores') * 2 * 0.8);
+                fprintf('检测到物理核数 %d，按超线程×2×80%% = %d\n', feature('numcores'), desired_workers);
+            catch
+                desired_workers = cluster.NumWorkers;
+                fprintf('无法读取核数，回退到 profile 上限: %d\n', desired_workers);
+            end
         end
     end
 
-    desired_workers = max(1, min([floor(desired_workers), max_workers, 512]));
+    desired_workers = max(1, floor(desired_workers));
 end
 
 function value = parsePositiveInteger(raw_value)
