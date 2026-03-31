@@ -25,7 +25,7 @@ params.T_max = 350;
 params.dt = 0.1;
 params.radius = 5;
 params.deac_threshold = 0.1745;
-params.cj_threshold = 2.0;
+params.cj_threshold = 1.5;
 params.fieldSize = 50;
 params.initDirection = pi/4;
 params.useFixedField = true;
@@ -133,7 +133,7 @@ for ei = 1:num_eta
     auc_smax = mannWhitneyAUC(signal_smax(:), stable_smax(:));
 
     res = struct();
-    res.eta = eta;
+    res.eta = eta_values(ei);
     res.signal_sigma2 = signal_sigma2(:);
     res.signal_cratio = signal_cratio(:);
     res.signal_smax = signal_smax(:);
@@ -259,20 +259,27 @@ for ei = 1:num_eta
         r.eta, r.auc_sigma2, r.auc_cratio, r.auc_smax, r.n_signal, r.n_stable);
 end
 
-fprintf(fid, '\n二、各信号的中位数对比\n');
+fprintf(fid, '\n二、各信号的中位数与百分位数对比\n');
 fprintf(fid, '------------------------------------------------------------------------\n');
 for ei = 1:num_eta
     r = all_results{ei};
     fprintf(fid, 'η=%.2f:\n', r.eta);
-    fprintf(fid, '  sigma2_M: 信号=%.6f, 稳定=%.6f, 比值=%.1fx\n', ...
+    fprintf(fid, '  sigma2_M: 信号中位数=%.6f, 稳定中位数=%.6f, 比值=%.1fx\n', ...
         median(r.signal_sigma2), median(r.stable_sigma2), ...
         median(r.signal_sigma2) / max(median(r.stable_sigma2), eps));
-    fprintf(fid, '  C_ratio:  信号=%.1f, 稳定=%.1f, 比值=%.1fx\n', ...
+    fprintf(fid, '  C_ratio:  信号中位数=%.1f, 稳定中位数=%.1f, 比值=%.1fx\n', ...
         median(r.signal_cratio), median(r.stable_cratio), ...
         median(r.signal_cratio) / max(median(r.stable_cratio), eps));
-    fprintf(fid, '  s_max:    信号=%.4f, 稳定=%.4f, 比值=%.1fx\n', ...
+    fprintf(fid, '  s_max:    信号中位数=%.4f, 稳定中位数=%.4f, 比值=%.1fx\n', ...
         median(r.signal_smax), median(r.stable_smax), ...
         median(r.signal_smax) / max(median(r.stable_smax), eps));
+    fprintf(fid, '  --- C_ratio 百分位数（用于标定 C_veto）---\n');
+    fprintf(fid, '  稳定 C_ratio: 90th=%.1f, 95th=%.1f, 99th=%.1f\n', ...
+        prctile(r.stable_cratio, 90), prctile(r.stable_cratio, 95), prctile(r.stable_cratio, 99));
+    fprintf(fid, '  信号 C_ratio: 10th=%.1f, 25th=%.1f, 50th=%.1f\n', ...
+        prctile(r.signal_cratio, 10), prctile(r.signal_cratio, 25), prctile(r.signal_cratio, 50));
+    fprintf(fid, '  → C_veto 推荐区间: [%.0f, %.0f]\n', ...
+        prctile(r.stable_cratio, 95), prctile(r.signal_cratio, 25));
 end
 
 fprintf(fid, '\n三、关键问题：C_ratio 在高噪声下是否仍有区分力？\n');
@@ -340,4 +347,111 @@ function auc = mannWhitneyAUC(pos, neg)
         score = score + left + 0.5 * (right - left);
     end
     auc = score / (numel(pos) * numel(neg));
+end
+
+function [sig_s2, sig_cr, sig_sm, stb_s2, stb_cr, stb_sm] = ...
+        runSingleDiagnosis(params, eta_values, eta_idx, trial, horizon)
+% runSingleDiagnosis 单次脉冲诊断：采集信号组和稳定组的统计量
+%
+% 流程：
+%   1. 以指定 η 运行带外源脉冲的仿真
+%   2. 每步记录每个粒子的 (σ²_M, C_ratio, s_max)
+%   3. 记录每个粒子首次激活的时间步
+%   4. 回溯标记"即将激活"粒子（激活前 h 步内的观测）
+%   5. 其余为稳定粒子观测
+
+    eta = eta_values(eta_idx);
+    rng(trial * 1000 + eta_idx);
+
+    p = params;
+    p.angleNoiseIntensity = eta^2 / 2;
+
+    sim = ParticleSimulationWithExternalPulse(p);
+    sim.external_pulse_count = 1;
+    sim.setLogging(false);
+    sim.resetCascadeTracking();
+    sim.initializeParticles();
+
+    N = p.N;
+    T = p.T_max;
+    dt = p.dt;
+
+    % 每步每粒子的统计量
+    sigma2_history = zeros(N, T);
+    cratio_history = zeros(N, T);
+    smax_history = zeros(N, T);
+
+    % 记录每个粒子首次激活的时间步（0 = 从未激活）
+    first_activation_step = zeros(N, 1);
+
+    for t = 1:T
+        % 记录激活前的状态
+        was_active = sim.isActive;
+
+        sim.step();
+
+        % 检测新激活
+        newly_activated = sim.isActive & ~was_active;
+        for i = find(newly_activated)'
+            if first_activation_step(i) == 0
+                first_activation_step(i) = t;
+            end
+        end
+
+        % 计算每个粒子的邻域统计量
+        neighbor_matrix = sim.findNeighbors();
+        for i = 1:N
+            neighbor_idx = find(neighbor_matrix(i, :));
+            if numel(neighbor_idx) < 2
+                sigma2_history(i, t) = 0;
+                cratio_history(i, t) = 1;
+                smax_history(i, t) = 0;
+                continue;
+            end
+            [sm, s2, ~, cr] = computeFullStats(sim, i, neighbor_idx, dt);
+            sigma2_history(i, t) = s2;
+            cratio_history(i, t) = cr;
+            smax_history(i, t) = sm;
+        end
+    end
+
+    % 分类：信号组 vs 稳定组
+    % 信号组：粒子 i 在时间步 t 满足 first_activation_step(i) > 0
+    %         且 t 在 [first_activation_step(i) - horizon, first_activation_step(i) - 1] 内
+    %         即激活前 horizon 步内的观测
+    % 稳定组：从未激活的粒子，脉冲后的所有时间步
+    %         （排除外源激活粒子本身）
+
+    sig_s2 = []; sig_cr = []; sig_sm = [];
+    stb_s2 = []; stb_cr = []; stb_sm = [];
+
+    pulse_step = sim.stabilization_steps;  % 脉冲触发的大致时间步
+
+    for i = 1:N
+        % 排除外源激活的粒子
+        if sim.isExternallyActivated(i)
+            continue;
+        end
+
+        if first_activation_step(i) > 0
+            % 该粒子被级联激活过：提取激活前 horizon 步的数据
+            t_act = first_activation_step(i);
+            t_start = max(t_act - horizon, 1);
+            t_end = t_act - 1;
+            if t_end >= t_start
+                sig_s2 = [sig_s2; sigma2_history(i, t_start:t_end)']; %#ok<AGROW>
+                sig_cr = [sig_cr; cratio_history(i, t_start:t_end)']; %#ok<AGROW>
+                sig_sm = [sig_sm; smax_history(i, t_start:t_end)']; %#ok<AGROW>
+            end
+        else
+            % 从未激活的粒子：脉冲后的数据作为稳定组
+            t_start = pulse_step + 1;
+            t_end = T;
+            if t_end >= t_start
+                stb_s2 = [stb_s2; sigma2_history(i, t_start:t_end)']; %#ok<AGROW>
+                stb_cr = [stb_cr; cratio_history(i, t_start:t_end)']; %#ok<AGROW>
+                stb_sm = [stb_sm; smax_history(i, t_start:t_end)']; %#ok<AGROW>
+            end
+        end
+    end
 end

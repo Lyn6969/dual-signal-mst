@@ -43,7 +43,7 @@ classdef ParticleSimulation < handle
         local_saliency_state; % [N x 1] 记录邻域运动显著性统计
 
         % 双信号门控连续自适应参数
-        adaptiveThresholdMode = 'binary';   % 'binary' | 'dual_signal_gate' | 'sigmoid_gate' | 'algebraic_fusion' | 'two_stage'
+        adaptiveThresholdMode = 'binary';   % 'binary' | 'binary_veto' | 'dual_signal_gate' | 'sigmoid_gate' | 'algebraic_fusion' | 'two_stage'
         dualSignalGamma = 1.0;              % γ: 方差映射指数
         dualSignalVarianceRef = [];         % V_ref: 方差归一化参考尺度（由 calibrate_vref 标定）
         dualSignalSmoothingLambda = 0.3;    % λ_base: 下降分支基础平滑速度
@@ -652,7 +652,7 @@ classdef ParticleSimulation < handle
             use_saliency_metric = ~isempty(cfg.saliency_threshold);
 
             % 双信号模式强制启用显著性统计
-            if ismember(obj.adaptiveThresholdMode, {'dual_signal_gate', 'sigmoid_gate', 'algebraic_fusion', 'two_stage'})
+            if ismember(obj.adaptiveThresholdMode, {'binary_veto', 'dual_signal_gate', 'sigmoid_gate', 'algebraic_fusion', 'two_stage'})
                 use_saliency_metric = true;
             end
 
@@ -729,6 +729,24 @@ classdef ParticleSimulation < handle
                             end
                             obj.cj_threshold_dynamic(i) = target_cj;
 
+                        case 'binary_veto'
+                            % C_ratio 否决门：σ²_M 触发 + C_ratio 确认
+                            % 复用 dualSignalClow 作为否决阈值（噪声 95th 上界）
+                            if saliency_var >= saliency_thr && numel(s_values) >= 2
+                                C_raw = max(s_values) / (median(s_values) + eps);
+                                if C_raw >= obj.dualSignalClow
+                                    target_cj = cfg.cj_low;
+                                else
+                                    target_cj = cfg.cj_high;
+                                end
+                            else
+                                target_cj = cfg.cj_high;
+                            end
+                            obj.cj_threshold_dynamic(i) = target_cj;
+                            if numel(s_values) >= 2
+                                obj.local_order_state(i) = max(s_values) / (median(s_values) + eps);
+                            end
+
                         case 'dual_signal_gate'
                             [D, C_norm] = obj.computeDualSignalMetrics(saliency_var, s_values);
                             target_cj = cfg.cj_high - (cfg.cj_high - cfg.cj_low) * (D ^ obj.dualSignalGamma);
@@ -783,11 +801,11 @@ classdef ParticleSimulation < handle
 
                             if si == 0  % H: 高阈值稳态
                                 if D >= obj.twoStageThresholdOn
-                                    % 候选触发：立刻降到低阈值
+                                    % 候选触发：降到中间阈值
                                     obj.twoStageState(i) = 1;  % → P
                                     obj.twoStageTimer(i) = 1;
                                     obj.twoStageEvidence(i) = E_t;
-                                    obj.cj_threshold_dynamic(i) = cfg.cj_low;
+                                    obj.cj_threshold_dynamic(i) = obj.twoStageMidThreshold;
                                 else
                                     obj.cj_threshold_dynamic(i) = cfg.cj_high;
                                 end
