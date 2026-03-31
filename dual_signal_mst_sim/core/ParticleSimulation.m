@@ -71,6 +71,7 @@ classdef ParticleSimulation < handle
 
         % 加权跟随模式
         useWeightedFollow = false;  % true: 过阈值邻居的显著性加权跟随; false: 只跟随 max_s 邻居
+        weightMode = 'absolute';    % 'absolute': w=s_ij/Σs  |  'excess': w=(s_ij-M_T)/Σ(s-M_T)
 
         % 拓扑邻居选择参数
         use_topology = false; % 是否使用拓扑邻居选择（false: 基于半径, true: 基于拓扑）
@@ -567,11 +568,18 @@ classdef ParticleSimulation < handle
                         if max_s > threshold_i
                             obj.isActive(i) = true;
                             if obj.useWeightedFollow
-                                % 加权跟随：所有过阈值邻居按 s_ij 加权
+                                % 加权跟随：所有过阈值邻居加权
                                 above_mask = s_values > threshold_i;
                                 above_idx = neibor_idx(above_mask);
                                 above_s = s_values(above_mask);
-                                weights = above_s / sum(above_s);
+                                if strcmp(obj.weightMode, 'excess')
+                                    % 超出量加权：w = (s_ij - M_T) / Σ(s - M_T)
+                                    excess = above_s - threshold_i;
+                                    weights = excess / sum(excess);
+                                else
+                                    % 绝对值加权：w = s_ij / Σs
+                                    weights = above_s / sum(above_s);
+                                end
                                 above_theta = obj.theta(above_idx);
                                 weighted_dir = angle(sum(weights .* exp(1j * above_theta)));
                                 weighted_dir = wrapTo2Pi(weighted_dir);
