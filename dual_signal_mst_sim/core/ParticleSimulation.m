@@ -69,6 +69,9 @@ classdef ParticleSimulation < handle
         twoStageTimer;                      % [N x 1] 确认窗口计数器
         twoStageEvidence;                   % [N x 1] 累积证据
 
+        % 加权跟随模式
+        useWeightedFollow = false;  % true: 过阈值邻居的显著性加权跟随; false: 只跟随 max_s 邻居
+
         % 拓扑邻居选择参数
         use_topology = false; % 是否使用拓扑邻居选择（false: 基于半径, true: 基于拓扑）
         k_neighbors = 7;      % 拓扑邻居选择中的最近邻数量
@@ -562,10 +565,25 @@ classdef ParticleSimulation < handle
 
                         threshold_i = obj.getActivationThreshold(i);
                         if max_s > threshold_i
-                            % 激活并只跟随最显著的邻居
                             obj.isActive(i) = true;
-                            obj.src_ids{i} = neibor_idx(max_s_idx);  % 只存储显著性最高的邻居ID
-                            desired_theta(i) = obj.theta(neibor_idx(max_s_idx));  % 直接使用该邻居的方向
+                            if obj.useWeightedFollow
+                                % 加权跟随：所有过阈值邻居按 s_ij 加权
+                                above_mask = s_values > threshold_i;
+                                above_idx = neibor_idx(above_mask);
+                                above_s = s_values(above_mask);
+                                weights = above_s / sum(above_s);
+                                above_theta = obj.theta(above_idx);
+                                weighted_dir = angle(sum(weights .* exp(1j * above_theta)));
+                                weighted_dir = wrapTo2Pi(weighted_dir);
+                                desired_theta(i) = weighted_dir;
+                                % src_ids 记录权重最大的邻居（用于去激活判断）
+                                [~, best] = max(above_s);
+                                obj.src_ids{i} = above_idx(best);
+                            else
+                                % 原始模式：只跟随最显著的邻居
+                                obj.src_ids{i} = neibor_idx(max_s_idx);
+                                desired_theta(i) = obj.theta(neibor_idx(max_s_idx));
+                            end
                         else
                             % 不激活，设置期望方向为邻居平均方向
                             neighbor_directions = obj.theta(neibor_idx);
