@@ -139,6 +139,23 @@ for ei = 1:num_eta
 
         R_all(:, mi, ei) = R_tmp;
         P_all(:, mi, ei) = P_tmp;
+
+        if wf
+            base_R = R_all(:, 1, ei);
+            valid_R = ~isnan(R_tmp) & ~isnan(base_R);
+            if any(valid_R) && all(abs(R_tmp(valid_R) - base_R(valid_R)) < 1e-12)
+                error('eta=%.2f, mode=%s: R 与 Binary 逐项完全相同，说明 weighted follow 在响应性分支未生效。', ...
+                    eta, m.name);
+            end
+
+            base_P = P_all(:, 1, ei);
+            valid_P = ~isnan(P_tmp) & ~isnan(base_P);
+            if any(valid_P) && all(abs(P_tmp(valid_P) - base_P(valid_P)) < 1e-12)
+                error('eta=%.2f, mode=%s: P 与 Binary 逐项完全相同，说明 weighted follow 在持久性分支未生效。', ...
+                    eta, m.name);
+            end
+        end
+
         fprintf('  R=%.4f+/-%.4f, P=%.2f+/-%.2f\n', ...
             mean(R_tmp,'omitnan'), std(R_tmp,'omitnan')/sqrt(num_runs), ...
             mean(P_tmp,'omitnan'), std(P_tmp,'omitnan')/sqrt(num_runs));
@@ -249,9 +266,9 @@ end
 fclose(fid);
 
 %% 8. 保存数据
-save(fullfile(out_dir, 'comparison_data.mat'), ...
-    'R_all', 'P_all', 'modes', 'eta_values', ...
-    'adaptive_cfg', 'base', 'num_runs', 'base_seed');
+saveResultBundle(out_dir, 'comparison_data', ...
+    {'R_all', 'P_all', 'modes', 'eta_values', ...
+     'adaptive_cfg', 'base', 'num_runs', 'base_seed'});
 
 fprintf('完成。输出目录: %s\n', out_dir);
 

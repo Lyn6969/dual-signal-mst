@@ -497,8 +497,25 @@ classdef ParticleSimulation < handle
             for i = 1:obj.N
                 neibor_idx = find(neighbor_matrix(i, :));
                 if obj.isActive(i)
-                    % 已激活，更新源头 ID
-                    if ismember(obj.src_ids{i}, neibor_idx)  % 检查唯一的源头是否还在邻居中
+                    if obj.useWeightedFollow
+                        % Weighted 模式：激活后每一步都基于当前过阈值候选集重算跟随方向
+                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        if ~has_signal
+                            obj.isActive(i) = false;
+                            obj.src_ids{i} = [];
+                            desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
+                        else
+                            angle_diff_rad = abs(wrapToPi(obj.theta(i) - follow_direction));
+                            if angle_diff_rad < obj.deac_threshold
+                                obj.isActive(i) = false;
+                                obj.src_ids{i} = [];
+                                desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
+                            else
+                                obj.src_ids{i} = representative_src;
+                                desired_theta(i) = follow_direction;
+                            end
+                        end
+                    elseif ismember(obj.src_ids{i}, neibor_idx)  % Binary 基线：保持原有单源跟随逻辑
                         % 计算与源头的角度差（弧度）
                         src_direction = obj.theta(obj.src_ids{i});
                         angle_diff_rad = abs(wrapToPi(obj.theta(i) - src_direction));
@@ -507,14 +524,7 @@ classdef ParticleSimulation < handle
                             % 取消激活
                             obj.isActive(i) = false;
                             obj.src_ids{i} = [];
-                            if ~isempty(neibor_idx)
-                                neibor_directions = obj.theta(neibor_idx);
-                                avg_neibor_dir = angle(mean(exp(1j * neibor_directions)));
-                                avg_neibor_dir = wrapTo2Pi(avg_neibor_dir);
-                                desired_theta(i) = avg_neibor_dir;
-                            else
-                                desired_theta(i) = obj.theta(i);
-                            end
+                            desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
                         else
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
@@ -523,81 +533,21 @@ classdef ParticleSimulation < handle
                         % 源头不在邻居中，取消激活
                         obj.isActive(i) = false;
                         obj.src_ids{i} = [];
-                        if ~isempty(neibor_idx)
-                            neibor_directions = obj.theta(neibor_idx);
-                            avg_neibor_dir = angle(mean(exp(1j * neibor_directions)));
-                            avg_neibor_dir = wrapTo2Pi(avg_neibor_dir);
-                            desired_theta(i) = avg_neibor_dir;
-                        else
-                            desired_theta(i) = obj.theta(i);
-                        end
+                        desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
                     end
                 else
                     % 未激活，检查候选邻居
                     if isempty(neibor_idx)
                         desired_theta(i) = obj.theta(i);
                     else
-                        % 计算相对位置变化
-                        current_diff = obj.positions(neibor_idx, :) - obj.positions(i, :);
-                        past_diff = obj.previousPositions(neibor_idx, :) - obj.previousPositions(i, :);
-
-                        % 使用标准欧几里得距离计算，不考虑周期性边界条件
-                        current_dist = vecnorm(current_diff, 2, 2);
-                        past_dist = vecnorm(past_diff, 2, 2);
-
-                        % 计算单位方向向量
-                        current_diff_unit = zeros(size(current_diff));
-                        past_diff_unit = zeros(size(past_diff));
-                        non_zero_current = current_dist > 0;
-                        non_zero_past = past_dist > 0;
-
-                        current_diff_unit(non_zero_current, :) = current_diff(non_zero_current, :) ./ current_dist(non_zero_current);
-                        past_diff_unit(non_zero_past, :) = past_diff(non_zero_past, :) ./ past_dist(non_zero_past);
-
-                        % 计算角度差（弧度）
-                        angle_cos = sum(past_diff_unit .* current_diff_unit, 2);
-                        angle_cos = max(min(angle_cos, 1), -1);
-                        angle_diff_rad = acos(angle_cos);
-
-                        % 计算显著性值 s
-                        s_values = angle_diff_rad / obj.dt;
-                        % 找出显著性最高的邻居
-                        [max_s, max_s_idx] = max(s_values);
-
-                        threshold_i = obj.getActivationThreshold(i);
-                        if max_s > threshold_i
+                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        if has_signal
                             obj.isActive(i) = true;
-                            if obj.useWeightedFollow
-                                % 加权跟随：所有过阈值邻居加权
-                                above_mask = s_values > threshold_i;
-                                above_idx = neibor_idx(above_mask);
-                                above_s = s_values(above_mask);
-                                if strcmp(obj.weightMode, 'excess')
-                                    % 超出量加权：w = (s_ij - M_T) / Σ(s - M_T)
-                                    excess = above_s - threshold_i;
-                                    weights = excess / sum(excess);
-                                else
-                                    % 绝对值加权：w = s_ij / Σs
-                                    weights = above_s / sum(above_s);
-                                end
-                                above_theta = obj.theta(above_idx);
-                                weighted_dir = angle(sum(weights .* exp(1j * above_theta)));
-                                weighted_dir = wrapTo2Pi(weighted_dir);
-                                desired_theta(i) = weighted_dir;
-                                % src_ids 记录权重最大的邻居（用于去激活判断）
-                                [~, best] = max(above_s);
-                                obj.src_ids{i} = above_idx(best);
-                            else
-                                % 原始模式：只跟随最显著的邻居
-                                obj.src_ids{i} = neibor_idx(max_s_idx);
-                                desired_theta(i) = obj.theta(neibor_idx(max_s_idx));
-                            end
+                            obj.src_ids{i} = representative_src;
+                            desired_theta(i) = follow_direction;
                         else
                             % 不激活，设置期望方向为邻居平均方向
-                            neighbor_directions = obj.theta(neibor_idx);
-                            avg_dir = angle(mean(exp(1j * neighbor_directions)));
-                            avg_dir = wrapTo2Pi(avg_dir);
-                            desired_theta(i) = avg_dir;
+                            desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
                         end
                     end
                 end
@@ -654,6 +604,94 @@ classdef ParticleSimulation < handle
             end
 
             obj.adaptiveThresholdConfig = cfg;
+        end
+
+        function desired_theta = computeAverageNeighborDirection(obj, i, neighbor_idx)
+        % computeAverageNeighborDirection 计算邻居平均方向
+            if isempty(neighbor_idx)
+                desired_theta = obj.theta(i);
+                return;
+            end
+
+            neighbor_directions = obj.theta(neighbor_idx);
+            avg_dir = angle(mean(exp(1j * neighbor_directions)));
+            desired_theta = wrapTo2Pi(avg_dir);
+        end
+
+        function [has_signal, follow_direction, representative_src, above_count] = computeFollowDirection(obj, i, neighbor_idx)
+        % computeFollowDirection 计算当前粒子的候选集跟随方向
+        %
+        % 输出:
+        %   has_signal         - 是否存在过阈值候选邻居
+        %   follow_direction   - Binary: max_s 方向；Weighted: 候选集加权方向
+        %   representative_src - 候选集中显著性最大的邻居 ID（用于记录/追踪）
+        %   above_count        - 过阈值候选邻居数量
+
+            has_signal = false;
+            follow_direction = obj.theta(i);
+            representative_src = [];
+            above_count = 0;
+
+            if isempty(neighbor_idx)
+                return;
+            end
+
+            current_diff = obj.positions(neighbor_idx, :) - obj.positions(i, :);
+            past_diff = obj.previousPositions(neighbor_idx, :) - obj.previousPositions(i, :);
+
+            current_dist = vecnorm(current_diff, 2, 2);
+            past_dist = vecnorm(past_diff, 2, 2);
+
+            current_diff_unit = zeros(size(current_diff));
+            past_diff_unit = zeros(size(past_diff));
+            non_zero_current = current_dist > 0;
+            non_zero_past = past_dist > 0;
+
+            current_diff_unit(non_zero_current, :) = current_diff(non_zero_current, :) ./ current_dist(non_zero_current);
+            past_diff_unit(non_zero_past, :) = past_diff(non_zero_past, :) ./ past_dist(non_zero_past);
+
+            angle_cos = sum(past_diff_unit .* current_diff_unit, 2);
+            angle_cos = max(min(angle_cos, 1), -1);
+            angle_diff_rad = acos(angle_cos);
+            s_values = angle_diff_rad / max(obj.dt, eps);
+
+            threshold_i = obj.getActivationThreshold(i);
+            above_mask = s_values > threshold_i;
+            above_count = sum(above_mask);
+            if above_count == 0
+                return;
+            end
+
+            has_signal = true;
+            above_idx = neighbor_idx(above_mask);
+            above_s = s_values(above_mask);
+            [~, best] = max(above_s);
+            representative_src = above_idx(best);
+
+            if ~obj.useWeightedFollow || above_count == 1
+                follow_direction = obj.theta(representative_src);
+                return;
+            end
+
+            if strcmp(obj.weightMode, 'excess')
+                weights = above_s - threshold_i;
+            else
+                weights = above_s;
+            end
+
+            weight_sum = sum(weights);
+            if weight_sum <= eps
+                follow_direction = obj.theta(representative_src);
+                return;
+            end
+            weights = weights / weight_sum;
+
+            weighted_vector = sum(weights .* exp(1j * obj.theta(above_idx)));
+            if abs(weighted_vector) <= eps
+                follow_direction = obj.theta(representative_src);
+            else
+                follow_direction = wrapTo2Pi(angle(weighted_vector));
+            end
         end
 
         function initializeAdaptiveThresholdState(obj)

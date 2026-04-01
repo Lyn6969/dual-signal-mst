@@ -10,6 +10,7 @@
 %   - fig2_distributions.png：各 η 下信号/噪声分布
 %   - fig3_joint_scatter.png：二维信号空间散点图
 %   - diagnosis_data.mat
+%   - diagnosis_data.json
 
 clear; clc; close all;
 
@@ -308,7 +309,8 @@ end
 fclose(fid);
 
 %% 保存数据
-save(fullfile(out_dir, 'diagnosis_data.mat'), 'all_results', 'eta_values', 'params', 'num_trials', 'signal_horizon');
+saveResultBundle(out_dir, 'diagnosis_data', ...
+    {'all_results', 'eta_values', 'params', 'num_trials', 'signal_horizon'});
 
 fprintf('\n完成。输出目录: %s\n', out_dir);
 

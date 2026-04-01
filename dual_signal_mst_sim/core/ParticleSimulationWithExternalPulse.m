@@ -242,8 +242,25 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
             for i = 1:obj.N
                 neibor_idx = find(neighbor_matrix(i, :));
                 if obj.isActive(i)
-                    % 已激活，更新源头 ID
-                    if ismember(obj.src_ids{i}, neibor_idx)  % 检查唯一的源头是否还在邻居中
+                    if obj.useWeightedFollow
+                        % Weighted 模式：激活后每一步都基于当前候选集重算跟随方向
+                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        if ~has_signal
+                            obj.isActive(i) = false;
+                            obj.src_ids{i} = [];
+                            desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
+                        else
+                            angle_diff_rad = abs(wrapToPi(obj.theta(i) - follow_direction));
+                            if angle_diff_rad < obj.deac_threshold
+                                obj.isActive(i) = false;
+                                obj.src_ids{i} = [];
+                                desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
+                            else
+                                obj.src_ids{i} = representative_src;
+                                desired_theta(i) = follow_direction;
+                            end
+                        end
+                    elseif ismember(obj.src_ids{i}, neibor_idx)  % Binary 基线：保持原有单源跟随逻辑
                         % 计算与源头的角度差（弧度）
                         src_direction = obj.theta(obj.src_ids{i});
                         angle_diff_rad = abs(wrapToPi(obj.theta(i) - src_direction));
@@ -252,14 +269,7 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                             % 取消激活
                             obj.isActive(i) = false;
                             obj.src_ids{i} = [];
-                            if ~isempty(neibor_idx)
-                                neibor_directions = obj.theta(neibor_idx);
-                                avg_neibor_dir = angle(mean(exp(1j * neibor_directions)));
-                                avg_neibor_dir = wrapTo2Pi(avg_neibor_dir);
-                                desired_theta(i) = avg_neibor_dir;
-                            else
-                                desired_theta(i) = obj.theta(i);
-                            end
+                            desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
                         else
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
@@ -268,59 +278,21 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                         % 源头不在邻居中，取消激活
                         obj.isActive(i) = false;
                         obj.src_ids{i} = [];
-                        if ~isempty(neibor_idx)
-                            neibor_directions = obj.theta(neibor_idx);
-                            avg_neibor_dir = angle(mean(exp(1j * neibor_directions)));
-                            avg_neibor_dir = wrapTo2Pi(avg_neibor_dir);
-                            desired_theta(i) = avg_neibor_dir;
-                        else
-                            desired_theta(i) = obj.theta(i);
-                        end
+                        desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
                     end
                 else
                     % 未激活，检查候选邻居
                     if isempty(neibor_idx)
                         desired_theta(i) = obj.theta(i);
                     else
-                        % 计算相对位置变化
-                        current_diff = obj.positions(neibor_idx, :) - obj.positions(i, :);
-                        past_diff = obj.previousPositions(neibor_idx, :) - obj.previousPositions(i, :);
-
-                        % 使用标准欧几里得距离计算，不考虑周期性边界条件
-                        current_dist = vecnorm(current_diff, 2, 2);
-                        past_dist = vecnorm(past_diff, 2, 2);
-
-                        % 计算单位方向向量
-                        current_diff_unit = zeros(size(current_diff));
-                        past_diff_unit = zeros(size(past_diff));
-                        non_zero_current = current_dist > 0;
-                        non_zero_past = past_dist > 0;
-
-                        current_diff_unit(non_zero_current, :) = current_diff(non_zero_current, :) ./ current_dist(non_zero_current);
-                        past_diff_unit(non_zero_past, :) = past_diff(non_zero_past, :) ./ past_dist(non_zero_past);
-
-                        % 计算角度差（弧度）
-                        angle_cos = sum(past_diff_unit .* current_diff_unit, 2);
-                        angle_cos = max(min(angle_cos, 1), -1);
-                        angle_diff_rad = acos(angle_cos);
-
-                        % 计算显著性值 s
-                        s_values = angle_diff_rad / obj.dt;
-                        % 找出显著性最高的邻居
-                        [max_s, max_s_idx] = max(s_values);
-
-                        threshold_i = obj.getActivationThreshold(i);
-                        if max_s > threshold_i
-                            % 激活并只跟随最显著的邻居
+                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        if has_signal
                             obj.isActive(i) = true;
-                            obj.src_ids{i} = neibor_idx(max_s_idx);  % 只存储显著性最高的邻居ID
-                            desired_theta(i) = obj.theta(neibor_idx(max_s_idx));  % 直接使用该邻居的方向
+                            obj.src_ids{i} = representative_src;
+                            desired_theta(i) = follow_direction;
                         else
                             % 不激活，设置期望方向为邻居平均方向
-                            neighbor_directions = obj.theta(neibor_idx);
-                            avg_dir = angle(mean(exp(1j * neighbor_directions)));
-                            avg_dir = wrapTo2Pi(avg_dir);
-                            desired_theta(i) = avg_dir;
+                            desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
                         end
                     end
                 end
