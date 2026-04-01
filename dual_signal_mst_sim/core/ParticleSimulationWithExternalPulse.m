@@ -237,6 +237,7 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
             end
 
             desired_theta = NaN(obj.N, 1);
+            response_gain = ones(obj.N, 1);
 
             % 2. 更新粒子状态和期望方向（原有逻辑）
             for i = 1:obj.N
@@ -244,7 +245,7 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                 if obj.isActive(i)
                     if obj.useWeightedFollow
                         % Weighted 模式：激活后每一步都基于当前候选集重算跟随方向
-                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        [has_signal, follow_direction, representative_src, ~, signal_confidence] = obj.computeFollowDirection(i, neibor_idx);
                         if ~has_signal
                             obj.isActive(i) = false;
                             obj.src_ids{i} = [];
@@ -258,6 +259,9 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                             else
                                 obj.src_ids{i} = representative_src;
                                 desired_theta(i) = follow_direction;
+                                if obj.useResponseGainModulation
+                                    response_gain(i) = obj.computeResponseGain(signal_confidence);
+                                end
                             end
                         end
                     elseif ismember(obj.src_ids{i}, neibor_idx)  % Binary 基线：保持原有单源跟随逻辑
@@ -273,6 +277,10 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                         else
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
+                            if obj.useResponseGainModulation
+                                signal_confidence = obj.computeSignalConfidence(i, neibor_idx);
+                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            end
                         end
                     else
                         % 源头不在邻居中，取消激活
@@ -285,11 +293,14 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                     if isempty(neibor_idx)
                         desired_theta(i) = obj.theta(i);
                     else
-                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        [has_signal, follow_direction, representative_src, ~, signal_confidence] = obj.computeFollowDirection(i, neibor_idx);
                         if has_signal
                             obj.isActive(i) = true;
                             obj.src_ids{i} = representative_src;
                             desired_theta(i) = follow_direction;
+                            if obj.useResponseGainModulation
+                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            end
                         else
                             % 不激活，设置期望方向为邻居平均方向
                             desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
@@ -300,6 +311,7 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
 
             % === 外源激活处理（关键新增） ===
             desired_theta = obj.updateExternallyActivatedParticles(desired_theta);
+            response_gain(obj.isExternallyActivated) = 1;
 
             % === 原有的角度和位置更新逻辑 ===
             % 3. 更新角度
@@ -309,7 +321,7 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
             if any(obj.isExternallyActivated)
                 noise(obj.isExternallyActivated) = 0;
             end
-            obj.theta = obj.theta + obj.angleUpdateParameter * weighted_sin * obj.dt + noise;
+            obj.theta = obj.theta + obj.angleUpdateParameter * response_gain .* weighted_sin * obj.dt + noise;
             obj.theta = mod(obj.theta, 2 * pi);
 
             % 4. 更新位置

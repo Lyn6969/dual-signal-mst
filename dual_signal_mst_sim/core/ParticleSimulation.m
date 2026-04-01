@@ -73,6 +73,14 @@ classdef ParticleSimulation < handle
         useWeightedFollow = false;  % true: 过阈值邻居的显著性加权跟随; false: 只跟随 max_s 邻居
         weightMode = 'absolute';    % 'absolute': w=s_ij/Σs  |  'excess': w=(s_ij-M_T)/Σ(s-M_T)
 
+        % 激活后响应强度调制
+        useResponseGainModulation = false;  % true: 激活后按局部置信度缩放转向增益
+        responseGainMin = 0.4;              % 最低响应增益 g_min
+        responseGainBeta = 2.0;             % 非线性指数 beta
+        responseGainClow = 30;              % C_ratio 归一化下界
+        responseGainChigh = 150;            % C_ratio 归一化上界
+        responseGainMarginRef = 0.5;        % 单源情形下的超阈值归一化参考尺度
+
         % 拓扑邻居选择参数
         use_topology = false; % 是否使用拓扑邻居选择（false: 基于半径, true: 基于拓扑）
         k_neighbors = 7;      % 拓扑邻居选择中的最近邻数量
@@ -492,6 +500,7 @@ classdef ParticleSimulation < handle
             end
 
             desired_theta = NaN(obj.N, 1);
+            response_gain = ones(obj.N, 1);
 
             % 2. 更新粒子状态和期望方向
             for i = 1:obj.N
@@ -499,7 +508,7 @@ classdef ParticleSimulation < handle
                 if obj.isActive(i)
                     if obj.useWeightedFollow
                         % Weighted 模式：激活后每一步都基于当前过阈值候选集重算跟随方向
-                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        [has_signal, follow_direction, representative_src, ~, signal_confidence] = obj.computeFollowDirection(i, neibor_idx);
                         if ~has_signal
                             obj.isActive(i) = false;
                             obj.src_ids{i} = [];
@@ -513,6 +522,9 @@ classdef ParticleSimulation < handle
                             else
                                 obj.src_ids{i} = representative_src;
                                 desired_theta(i) = follow_direction;
+                                if obj.useResponseGainModulation
+                                    response_gain(i) = obj.computeResponseGain(signal_confidence);
+                                end
                             end
                         end
                     elseif ismember(obj.src_ids{i}, neibor_idx)  % Binary 基线：保持原有单源跟随逻辑
@@ -528,6 +540,10 @@ classdef ParticleSimulation < handle
                         else
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
+                            if obj.useResponseGainModulation
+                                signal_confidence = obj.computeSignalConfidence(i, neibor_idx);
+                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            end
                         end
                     else
                         % 源头不在邻居中，取消激活
@@ -540,11 +556,14 @@ classdef ParticleSimulation < handle
                     if isempty(neibor_idx)
                         desired_theta(i) = obj.theta(i);
                     else
-                        [has_signal, follow_direction, representative_src] = obj.computeFollowDirection(i, neibor_idx);
+                        [has_signal, follow_direction, representative_src, ~, signal_confidence] = obj.computeFollowDirection(i, neibor_idx);
                         if has_signal
                             obj.isActive(i) = true;
                             obj.src_ids{i} = representative_src;
                             desired_theta(i) = follow_direction;
+                            if obj.useResponseGainModulation
+                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            end
                         else
                             % 不激活，设置期望方向为邻居平均方向
                             desired_theta(i) = obj.computeAverageNeighborDirection(i, neibor_idx);
@@ -556,7 +575,7 @@ classdef ParticleSimulation < handle
             % 3. 更新角度
             delta_theta = desired_theta - obj.theta;
             weighted_sin = sin(delta_theta);
-            obj.theta = obj.theta + obj.angleUpdateParameter * weighted_sin * obj.dt + sqrt(2 * obj.angleNoiseIntensity * obj.dt) * randn(obj.N, 1);
+            obj.theta = obj.theta + obj.angleUpdateParameter * response_gain .* weighted_sin * obj.dt + sqrt(2 * obj.angleNoiseIntensity * obj.dt) * randn(obj.N, 1);
             obj.theta = mod(obj.theta, 2 * pi);
 
             % 4. 更新位置
@@ -618,7 +637,7 @@ classdef ParticleSimulation < handle
             desired_theta = wrapTo2Pi(avg_dir);
         end
 
-        function [has_signal, follow_direction, representative_src, above_count] = computeFollowDirection(obj, i, neighbor_idx)
+        function [has_signal, follow_direction, representative_src, above_count, signal_confidence] = computeFollowDirection(obj, i, neighbor_idx)
         % computeFollowDirection 计算当前粒子的候选集跟随方向
         %
         % 输出:
@@ -626,34 +645,19 @@ classdef ParticleSimulation < handle
         %   follow_direction   - Binary: max_s 方向；Weighted: 候选集加权方向
         %   representative_src - 候选集中显著性最大的邻居 ID（用于记录/追踪）
         %   above_count        - 过阈值候选邻居数量
+        %   signal_confidence  - 基于局部显著性结构的置信度 ∈ [0,1]
 
             has_signal = false;
             follow_direction = obj.theta(i);
             representative_src = [];
             above_count = 0;
+            signal_confidence = 1.0;
 
             if isempty(neighbor_idx)
                 return;
             end
 
-            current_diff = obj.positions(neighbor_idx, :) - obj.positions(i, :);
-            past_diff = obj.previousPositions(neighbor_idx, :) - obj.previousPositions(i, :);
-
-            current_dist = vecnorm(current_diff, 2, 2);
-            past_dist = vecnorm(past_diff, 2, 2);
-
-            current_diff_unit = zeros(size(current_diff));
-            past_diff_unit = zeros(size(past_diff));
-            non_zero_current = current_dist > 0;
-            non_zero_past = past_dist > 0;
-
-            current_diff_unit(non_zero_current, :) = current_diff(non_zero_current, :) ./ current_dist(non_zero_current);
-            past_diff_unit(non_zero_past, :) = past_diff(non_zero_past, :) ./ past_dist(non_zero_past);
-
-            angle_cos = sum(past_diff_unit .* current_diff_unit, 2);
-            angle_cos = max(min(angle_cos, 1), -1);
-            angle_diff_rad = acos(angle_cos);
-            s_values = angle_diff_rad / max(obj.dt, eps);
+            s_values = obj.computeSaliencyValues(i, neighbor_idx);
 
             threshold_i = obj.getActivationThreshold(i);
             above_mask = s_values > threshold_i;
@@ -667,6 +671,7 @@ classdef ParticleSimulation < handle
             above_s = s_values(above_mask);
             [~, best] = max(above_s);
             representative_src = above_idx(best);
+            signal_confidence = obj.normalizeConfidenceFromSaliency(above_s, threshold_i);
 
             if ~obj.useWeightedFollow || above_count == 1
                 follow_direction = obj.theta(representative_src);
@@ -692,6 +697,69 @@ classdef ParticleSimulation < handle
             else
                 follow_direction = wrapTo2Pi(angle(weighted_vector));
             end
+        end
+
+        function s_values = computeSaliencyValues(obj, i, neighbor_idx)
+        % computeSaliencyValues 计算当前粒子相对于邻居的显著性 s_ij
+            if isempty(neighbor_idx)
+                s_values = zeros(0, 1);
+                return;
+            end
+
+            current_diff = obj.positions(neighbor_idx, :) - obj.positions(i, :);
+            past_diff = obj.previousPositions(neighbor_idx, :) - obj.previousPositions(i, :);
+
+            current_dist = vecnorm(current_diff, 2, 2);
+            past_dist = vecnorm(past_diff, 2, 2);
+
+            current_diff_unit = zeros(size(current_diff));
+            past_diff_unit = zeros(size(past_diff));
+            non_zero_current = current_dist > 0;
+            non_zero_past = past_dist > 0;
+
+            current_diff_unit(non_zero_current, :) = current_diff(non_zero_current, :) ./ current_dist(non_zero_current);
+            past_diff_unit(non_zero_past, :) = past_diff(non_zero_past, :) ./ past_dist(non_zero_past);
+
+            angle_cos = sum(past_diff_unit .* current_diff_unit, 2);
+            angle_cos = max(min(angle_cos, 1), -1);
+            angle_diff_rad = acos(angle_cos);
+            s_values = angle_diff_rad / max(obj.dt, eps);
+        end
+
+        function signal_confidence = computeSignalConfidence(obj, i, neighbor_idx)
+        % computeSignalConfidence 计算局部显著性结构的置信度
+            s_values = obj.computeSaliencyValues(i, neighbor_idx);
+            threshold_i = obj.getActivationThreshold(i);
+            above_s = s_values(s_values > threshold_i);
+            signal_confidence = obj.normalizeConfidenceFromSaliency(above_s, threshold_i);
+        end
+
+        function signal_confidence = normalizeConfidenceFromSaliency(obj, above_s, threshold_i)
+        % normalizeConfidenceFromSaliency 将候选集显著性统计归一化到 [0,1]
+            if isempty(above_s)
+                signal_confidence = 0;
+                return;
+            end
+
+            if numel(above_s) == 1
+                margin = (above_s(1) - threshold_i) / max(threshold_i, eps);
+                margin_ref = max(obj.responseGainMarginRef, eps);
+                signal_confidence = min(max(margin / margin_ref, 0), 1);
+                return;
+            end
+
+            C_raw = max(above_s) / (median(above_s) + eps);
+            C_low = max(obj.responseGainClow, 1 + eps);
+            C_high = max(obj.responseGainChigh, C_low * (1 + 1e-6));
+            signal_confidence = (log10(max(C_raw, 1)) - log10(C_low)) / (log10(C_high) - log10(C_low));
+            signal_confidence = min(max(signal_confidence, 0), 1);
+        end
+
+        function gain = computeResponseGain(obj, signal_confidence)
+        % computeResponseGain 根据置信度生成响应强度缩放因子
+            g_min = min(max(obj.responseGainMin, 0), 1);
+            beta = max(obj.responseGainBeta, 0);
+            gain = g_min + (1 - g_min) * (signal_confidence ^ beta);
         end
 
         function initializeAdaptiveThresholdState(obj)
