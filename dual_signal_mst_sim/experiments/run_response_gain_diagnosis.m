@@ -6,7 +6,13 @@
 %   - margin（单源候选时的超阈值幅度）
 %   - C_ratio（多源候选时的主导性）
 %   - |A_i|（过阈值候选数量）
-% 对“即将激活粒子”(h<=3) 与 “稳定粒子” 的区分能力。
+%
+% 注意：这些统计量不是“激活前预测量”，而是“触发时刻响应量”。
+% 因此本脚本对 signal 组取“首次激活时刻”的观测；
+% 对 stable 组取“脉冲后从未激活粒子”的背景观测。
+%
+% 候选统计统一使用 cj_low 作为参考阈值，避免当前动态阈值
+% 将稳定组候选集合全部压成空集。
 %
 % 输出（results/response_gain_diagnosis_<timestamp>/）：
 %   - analysis_report.txt
@@ -59,7 +65,7 @@ params.responseGainMarginRef = 0.5;
 
 eta_values = [0.25, 0.30, 0.40];
 num_trials = 10;
-signal_horizon = 3;
+signal_horizon = 3;  % 仅保留在输出中作背景说明，不再用于 q/margin 主诊断分组
 
 %% 输出目录
 results_dir = fullfile(fileparts(mfilename('fullpath')), '..', 'results');
@@ -331,7 +337,9 @@ fprintf(fid, '实验设置:\n');
 fprintf(fid, '  η = %s\n', mat2str(eta_values));
 fprintf(fid, '  num_trials = %d, signal_horizon = %d\n', num_trials, signal_horizon);
 fprintf(fid, '  Binary 基线动力学：useAdaptiveThreshold=true, adaptiveThresholdMode=binary\n');
-fprintf(fid, '  仅诊断 q_i / margin / |A_i| 的统计区分力，不在动力学中开启 response-gain\n\n');
+fprintf(fid, '  signal 组：首次激活时刻的局部统计量\n');
+fprintf(fid, '  stable 组：脉冲后从未激活粒子的背景观测\n');
+fprintf(fid, '  q_i / margin / |A_i| 统一使用 cj_low 作为参考阈值，不在动力学中开启 response-gain\n\n');
 
 fprintf(fid, 'Response-Gain 参数:\n');
 fprintf(fid, '  g_min = %.2f, beta = %.2f, C_low = %.1f, C_high = %.1f, margin_ref = %.2f\n\n', ...
@@ -387,10 +395,10 @@ for ei = 1:num_eta
     end
 
     if r.signal_single_share >= 0.5
-        fprintf(fid, '  激活前观测以单源候选为主 (占比 %.1f%%)，margin 分支很关键。\n', ...
+        fprintf(fid, '  signal 观测以单源候选为主 (占比 %.1f%%)，margin 分支很关键。\n', ...
             100 * r.signal_single_share);
     else
-        fprintf(fid, '  激活前观测中多源候选占比较高 (单源占比 %.1f%%)。\n', ...
+        fprintf(fid, '  signal 观测中多源候选占比较高 (单源占比 %.1f%%)。\n', ...
             100 * r.signal_single_share);
     end
 
@@ -476,10 +484,8 @@ function auc = mannWhitneyAUC(pos, neg)
 end
 
 function [sigma2_val, cratio_val, smax_val, above_count, margin_val, q_val, gain_val] = ...
-        computeResponseGainStats(sim, i, neighbor_idx)
+        computeResponseGainStats(sim, i, neighbor_idx, threshold_ref)
 % computeResponseGainStats 计算 response-gain 所需的局部统计量
-
-    threshold_i = sim.getActivationThreshold(i);
 
     if isempty(neighbor_idx)
         sigma2_val = 0;
@@ -512,7 +518,7 @@ function [sigma2_val, cratio_val, smax_val, above_count, margin_val, q_val, gain
         cratio_val = 1;
     end
 
-    above_s = s_values(s_values > threshold_i);
+    above_s = s_values(s_values > threshold_ref);
     above_count = numel(above_s);
     if above_count == 0
         margin_val = 0;
@@ -521,8 +527,8 @@ function [sigma2_val, cratio_val, smax_val, above_count, margin_val, q_val, gain
         return;
     end
 
-    margin_val = (max(above_s) - threshold_i) / max(threshold_i, eps);
-    q_val = sim.normalizeConfidenceFromSaliency(above_s, threshold_i);
+    margin_val = (max(above_s) - threshold_ref) / max(threshold_ref, eps);
+    q_val = sim.normalizeConfidenceFromSaliency(above_s, threshold_ref);
     gain_val = sim.computeResponseGain(q_val);
 end
 
@@ -543,6 +549,7 @@ function trial_res = runSingleResponseGainDiagnosis(params, eta_values, eta_idx,
 
     N = p.N;
     T = p.T_max;
+    threshold_ref = p.adaptiveThresholdConfig.cj_low;
 
     sigma2_history = zeros(N, T);
     cratio_history = zeros(N, T);
@@ -577,7 +584,7 @@ function trial_res = runSingleResponseGainDiagnosis(params, eta_values, eta_idx,
         neighbor_matrix = sim.findNeighbors();
         for i = 1:N
             neighbor_idx = find(neighbor_matrix(i, :));
-            [s2, cr, sm, ac, mg, qv, gv] = computeResponseGainStats(sim, i, neighbor_idx);
+            [s2, cr, sm, ac, mg, qv, gv] = computeResponseGainStats(sim, i, neighbor_idx, threshold_ref);
             sigma2_history(i, t) = s2;
             cratio_history(i, t) = cr;
             smax_history(i, t) = sm;
@@ -602,18 +609,13 @@ function trial_res = runSingleResponseGainDiagnosis(params, eta_values, eta_idx,
 
         if first_activation_step(i) > 0
             t_act = first_activation_step(i);
-            t_start = max(t_act - horizon, 1);
-            t_end = t_act - 1;
-            if t_end >= t_start
-                idx = t_start:t_end;
-                signal.sigma2 = [signal.sigma2; sigma2_history(i, idx)']; %#ok<AGROW>
-                signal.cratio = [signal.cratio; cratio_history(i, idx)']; %#ok<AGROW>
-                signal.smax = [signal.smax; smax_history(i, idx)']; %#ok<AGROW>
-                signal.above_count = [signal.above_count; above_count_history(i, idx)']; %#ok<AGROW>
-                signal.margin = [signal.margin; margin_history(i, idx)']; %#ok<AGROW>
-                signal.q = [signal.q; q_history(i, idx)']; %#ok<AGROW>
-                signal.gain = [signal.gain; gain_history(i, idx)']; %#ok<AGROW>
-            end
+            signal.sigma2 = [signal.sigma2; sigma2_history(i, t_act)]; %#ok<AGROW>
+            signal.cratio = [signal.cratio; cratio_history(i, t_act)]; %#ok<AGROW>
+            signal.smax = [signal.smax; smax_history(i, t_act)]; %#ok<AGROW>
+            signal.above_count = [signal.above_count; above_count_history(i, t_act)]; %#ok<AGROW>
+            signal.margin = [signal.margin; margin_history(i, t_act)]; %#ok<AGROW>
+            signal.q = [signal.q; q_history(i, t_act)]; %#ok<AGROW>
+            signal.gain = [signal.gain; gain_history(i, t_act)]; %#ok<AGROW>
         else
             t_start = min(pulse_step + 1, T);
             t_end = T;
