@@ -75,11 +75,14 @@ classdef ParticleSimulation < handle
 
         % 激活后响应强度调制
         useResponseGainModulation = false;  % true: 激活后按局部置信度缩放转向增益
+        responseGainMode = 'legacy_q';      % 'legacy_q' | 'margin_only'
+        responseGainApply = 'all_active';   % 'all_active' | 'first_hop'
         responseGainMin = 0.4;              % 最低响应增益 g_min
         responseGainBeta = 2.0;             % 非线性指数 beta
         responseGainClow = 30;              % C_ratio 归一化下界
         responseGainChigh = 150;            % C_ratio 归一化上界
         responseGainMarginRef = 0.5;        % 单源情形下的超阈值归一化参考尺度
+        responseGainC = 3.0;                % margin-only 模式中的 gain 缩放常数 c
 
         % 拓扑邻居选择参数
         use_topology = false; % 是否使用拓扑邻居选择（false: 基于半径, true: 基于拓扑）
@@ -522,8 +525,8 @@ classdef ParticleSimulation < handle
                             else
                                 obj.src_ids{i} = representative_src;
                                 desired_theta(i) = follow_direction;
-                                if obj.useResponseGainModulation
-                                    response_gain(i) = obj.computeResponseGain(signal_confidence);
+                                if obj.shouldApplyResponseGain(false)
+                                    response_gain(i) = obj.computeResponseGainValue(i, neibor_idx, signal_confidence);
                                 end
                             end
                         end
@@ -540,9 +543,8 @@ classdef ParticleSimulation < handle
                         else
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
-                            if obj.useResponseGainModulation
-                                signal_confidence = obj.computeSignalConfidence(i, neibor_idx);
-                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            if obj.shouldApplyResponseGain(false)
+                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx);
                             end
                         end
                     else
@@ -561,8 +563,8 @@ classdef ParticleSimulation < handle
                             obj.isActive(i) = true;
                             obj.src_ids{i} = representative_src;
                             desired_theta(i) = follow_direction;
-                            if obj.useResponseGainModulation
-                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            if obj.shouldApplyResponseGain(true)
+                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx, signal_confidence);
                             end
                         else
                             % 不激活，设置期望方向为邻居平均方向
@@ -635,6 +637,23 @@ classdef ParticleSimulation < handle
             neighbor_directions = obj.theta(neighbor_idx);
             avg_dir = angle(mean(exp(1j * neighbor_directions)));
             desired_theta = wrapTo2Pi(avg_dir);
+        end
+
+        function should_apply = shouldApplyResponseGain(obj, is_new_activation)
+        % shouldApplyResponseGain 判断当前时间步是否应施加响应增益
+            if ~obj.useResponseGainModulation
+                should_apply = false;
+                return;
+            end
+
+            switch obj.responseGainApply
+                case 'all_active'
+                    should_apply = true;
+                case 'first_hop'
+                    should_apply = is_new_activation;
+                otherwise
+                    error('未知 responseGainApply: %s', obj.responseGainApply);
+            end
         end
 
         function [has_signal, follow_direction, representative_src, above_count, signal_confidence] = computeFollowDirection(obj, i, neighbor_idx)
@@ -734,6 +753,18 @@ classdef ParticleSimulation < handle
             signal_confidence = obj.normalizeConfidenceFromSaliency(above_s, threshold_i);
         end
 
+        function threshold_ref = getResponseGainReferenceThreshold(obj)
+        % getResponseGainReferenceThreshold 获取 margin-only 模式的参考阈值
+            threshold_ref = obj.cj_threshold;
+            if obj.useAdaptiveThreshold && isfield(obj.adaptiveThresholdConfig, 'cj_low') ...
+                    && isnumeric(obj.adaptiveThresholdConfig.cj_low) ...
+                    && isfinite(obj.adaptiveThresholdConfig.cj_low) ...
+                    && obj.adaptiveThresholdConfig.cj_low > 0
+                threshold_ref = obj.adaptiveThresholdConfig.cj_low;
+            end
+            threshold_ref = max(threshold_ref, eps);
+        end
+
         function signal_confidence = normalizeConfidenceFromSaliency(obj, above_s, threshold_i)
         % normalizeConfidenceFromSaliency 将候选集显著性统计归一化到 [0,1]
             if isempty(above_s)
@@ -760,6 +791,45 @@ classdef ParticleSimulation < handle
             g_min = min(max(obj.responseGainMin, 0), 1);
             beta = max(obj.responseGainBeta, 0);
             gain = g_min + (1 - g_min) * (signal_confidence ^ beta);
+        end
+
+        function gain = computeMarginOnlyGain(obj, i, neighbor_idx)
+        % computeMarginOnlyGain 基于相对阈值超出量计算 gain
+            if isempty(neighbor_idx)
+                gain = 1;
+                return;
+            end
+
+            s_values = obj.computeSaliencyValues(i, neighbor_idx);
+            if isempty(s_values)
+                gain = 1;
+                return;
+            end
+
+            threshold_ref = obj.getResponseGainReferenceThreshold();
+            s_max = max(s_values);
+            c = max(obj.responseGainC, eps);
+            gain = min(s_max / (c * threshold_ref), 1);
+            gain = max(gain, 0);
+        end
+
+        function gain = computeResponseGainValue(obj, i, neighbor_idx, signal_confidence)
+        % computeResponseGainValue 根据当前模式计算响应增益
+            if nargin < 4
+                signal_confidence = [];
+            end
+
+            switch obj.responseGainMode
+                case 'legacy_q'
+                    if isempty(signal_confidence)
+                        signal_confidence = obj.computeSignalConfidence(i, neighbor_idx);
+                    end
+                    gain = obj.computeResponseGain(signal_confidence);
+                case 'margin_only'
+                    gain = obj.computeMarginOnlyGain(i, neighbor_idx);
+                otherwise
+                    error('未知 responseGainMode: %s', obj.responseGainMode);
+            end
         end
 
         function initializeAdaptiveThresholdState(obj)

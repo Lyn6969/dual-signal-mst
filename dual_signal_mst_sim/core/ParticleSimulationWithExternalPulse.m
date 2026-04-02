@@ -259,8 +259,8 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                             else
                                 obj.src_ids{i} = representative_src;
                                 desired_theta(i) = follow_direction;
-                                if obj.useResponseGainModulation
-                                    response_gain(i) = obj.computeResponseGain(signal_confidence);
+                                if obj.shouldApplyResponseGain(false)
+                                    response_gain(i) = obj.computeResponseGainValue(i, neibor_idx, signal_confidence);
                                 end
                             end
                         end
@@ -277,9 +277,8 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                         else
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
-                            if obj.useResponseGainModulation
-                                signal_confidence = obj.computeSignalConfidence(i, neibor_idx);
-                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            if obj.shouldApplyResponseGain(false)
+                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx);
                             end
                         end
                     else
@@ -298,8 +297,8 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                             obj.isActive(i) = true;
                             obj.src_ids{i} = representative_src;
                             desired_theta(i) = follow_direction;
-                            if obj.useResponseGainModulation
-                                response_gain(i) = obj.computeResponseGain(signal_confidence);
+                            if obj.shouldApplyResponseGain(true)
+                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx, signal_confidence);
                             end
                         else
                             % 不激活，设置期望方向为邻居平均方向
