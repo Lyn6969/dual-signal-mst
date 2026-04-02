@@ -1,6 +1,7 @@
 %% run_margin_gain_recheck.m
-% Binary vs MarginAll_c3.0 多噪声复检实验
-% 目标：用 50 runs 在多个噪声水平下复检 margin-only gain 的稳定性
+% Binary vs MarginAll_c3.0 细噪声复检实验
+% 目标：用 50 runs 在 eta=0.20~0.40 的细粒度噪声区间下复检
+%       margin-only gain 的稳定性
 
 clc; clear; close all;
 
@@ -9,7 +10,7 @@ addpath(fullfile(fileparts(mfilename('fullpath')), '..', 'core'));
 %% 1. 参数
 fprintf('=================================================\n');
 fprintf('  Binary vs MarginAll_c3.0 Recheck\n');
-fprintf('  多噪声水平 × 50 runs\n');
+fprintf('  eta=0.20~0.40 细噪声水平 × 50 runs\n');
 fprintf('=================================================\n\n');
 
 base = struct();
@@ -33,7 +34,7 @@ resp_base.forced_turn_duration = 400;
 pers_base = base;
 pers_base.T_max = 600;
 
-eta_values = [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40];
+eta_values = 0.20:0.025:0.40;
 num_runs = 50;
 num_angles = 1;
 base_seed = 20260402;
