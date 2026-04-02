@@ -52,6 +52,11 @@ params = S.params;
 adaptive_cfg = S.adaptive_cfg;
 num_trials = S.num_trials;
 signal_horizon = S.signal_horizon;
+if isfield(S, 'diagnosis_elapsed')
+    diagnosis_elapsed = S.diagnosis_elapsed;
+else
+    diagnosis_elapsed = NaN;
+end
 
 %% 3. 输出目录
 results_dir = fullfile(fileparts(mfilename('fullpath')), '..', 'results');
