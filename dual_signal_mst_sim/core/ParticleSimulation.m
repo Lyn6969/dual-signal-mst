@@ -544,7 +544,7 @@ classdef ParticleSimulation < handle
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
                             if obj.shouldApplyResponseGain(false)
-                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx);
+                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx, [], obj.src_ids{i});
                             end
                         end
                     else
@@ -793,8 +793,12 @@ classdef ParticleSimulation < handle
             gain = g_min + (1 - g_min) * (signal_confidence ^ beta);
         end
 
-        function gain = computeMarginOnlyGain(obj, i, neighbor_idx)
-        % computeMarginOnlyGain 基于相对阈值超出量计算 gain
+        function gain = computeMarginOnlyGain(obj, i, neighbor_idx, src_id)
+        % computeMarginOnlyGain 基于当前跟随源头的相对阈值超出量计算 gain
+            if nargin < 4
+                src_id = [];
+            end
+
             if isempty(neighbor_idx)
                 gain = 1;
                 return;
@@ -807,16 +811,28 @@ classdef ParticleSimulation < handle
             end
 
             threshold_ref = obj.getResponseGainReferenceThreshold();
-            s_max = max(s_values);
+            if isempty(src_id)
+                s_target = max(s_values);
+            else
+                src_pos = find(neighbor_idx == src_id, 1, 'first');
+                if isempty(src_pos)
+                    gain = 1;
+                    return;
+                end
+                s_target = s_values(src_pos);
+            end
             c = max(obj.responseGainC, eps);
-            gain = min(s_max / (c * threshold_ref), 1);
+            gain = min(s_target / (c * threshold_ref), 1);
             gain = max(gain, 0);
         end
 
-        function gain = computeResponseGainValue(obj, i, neighbor_idx, signal_confidence)
+        function gain = computeResponseGainValue(obj, i, neighbor_idx, signal_confidence, src_id)
         % computeResponseGainValue 根据当前模式计算响应增益
             if nargin < 4
                 signal_confidence = [];
+            end
+            if nargin < 5
+                src_id = [];
             end
 
             switch obj.responseGainMode
@@ -826,7 +842,7 @@ classdef ParticleSimulation < handle
                     end
                     gain = obj.computeResponseGain(signal_confidence);
                 case 'margin_only'
-                    gain = obj.computeMarginOnlyGain(i, neighbor_idx);
+                    gain = obj.computeMarginOnlyGain(i, neighbor_idx, src_id);
                 otherwise
                     error('未知 responseGainMode: %s', obj.responseGainMode);
             end

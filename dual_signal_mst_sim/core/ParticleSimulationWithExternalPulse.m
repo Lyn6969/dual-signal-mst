@@ -278,7 +278,7 @@ classdef ParticleSimulationWithExternalPulse < ParticleSimulation
                             % 保持激活，跟随源头
                             desired_theta(i) = src_direction;
                             if obj.shouldApplyResponseGain(false)
-                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx);
+                                response_gain(i) = obj.computeResponseGainValue(i, neibor_idx, [], obj.src_ids{i});
                             end
                         end
                     else
